@@ -28,11 +28,11 @@ func TestUnmarshal(t *testing.T) {
 			want:    -10,
 			wantErr: assert.NoError,
 		},
-		//{
-		//	name:    "invalid number (0 padding)",
-		//	raw:     []byte("i010e"),
-		//	wantErr: assert.Error,
-		//},
+		{
+			name:    "invalid number (0 padding)",
+			raw:     []byte("i010e"),
+			wantErr: assert.Error,
+		},
 		{
 			name:    "invalid number (invalid contents)",
 			raw:     []byte("i3f23e"),

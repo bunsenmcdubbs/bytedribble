@@ -71,6 +71,15 @@ func UnmarshalInt(raw *bytes.Reader) (int, error) {
 	if (b < '0' || b > '9') && b != '-' {
 		return 0, errors.New("int encoding must start with a number or '-'")
 	}
+	if b == '0' {
+		b, err = raw.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		if b != 'e' {
+			return 0, errors.New("int encoding cannot have leading zeros")
+		}
+	}
 	intBytes = append(intBytes, b)
 
 	for b, err = raw.ReadByte(); err == nil; b, err = raw.ReadByte() {
