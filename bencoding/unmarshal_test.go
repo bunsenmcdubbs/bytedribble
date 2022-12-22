@@ -71,6 +71,18 @@ func TestUnmarshal(t *testing.T) {
 			want:    []any{"hello, ", "world!"},
 			wantErr: assert.NoError,
 		},
+		{
+			name:    "map[string]int",
+			raw:     []byte("d5:helloi3e6:world!i-343ee"),
+			want:    map[string]any{"hello": 3, "world!": -343},
+			wantErr: assert.NoError,
+		},
+		{
+			name:    "map[string]string",
+			raw:     []byte("d5:hello5:world3:abc3:efge"),
+			want:    map[string]any{"hello": "world", "abc": "efg"},
+			wantErr: assert.NoError,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

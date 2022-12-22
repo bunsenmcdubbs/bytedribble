@@ -127,7 +127,37 @@ func UnmarshalList(raw *bytes.Reader) ([]any, error) {
 }
 
 func UnmarshalDict(raw *bytes.Reader) (map[string]any, error) {
-	return nil, errors.New("not implemented")
+	b, err := raw.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	if b != 'd' {
+		return nil, errors.New("dict encoding must begin with 'd'")
+	}
+
+	dict := make(map[string]any)
+	for {
+		b, err = raw.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		if b == 'e' {
+			return dict, nil
+		}
+		if err := raw.UnreadByte(); err != nil {
+			return nil, err
+		}
+
+		key, err := UnmarshalString(raw)
+		if err != nil {
+			return nil, err
+		}
+		value, err := Unmarshal(raw)
+		if err != nil {
+			return nil, err
+		}
+		dict[key] = value
+	}
 }
 
 func UnmarshalString(raw *bytes.Reader) (string, error) {
