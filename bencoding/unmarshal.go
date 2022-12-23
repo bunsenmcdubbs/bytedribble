@@ -1,15 +1,19 @@
 package bencoding
 
 import (
-	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"strconv"
 )
 
-func Unmarshal(raw *bytes.Reader) (result any, err error) {
-	if raw.Len() == 0 {
-		return nil, nil
-	}
+type ByteReader interface {
+	ReadByte() (byte, error)
+	UnreadByte() error
+	Read([]byte) (int, error)
+}
+
+func Unmarshal(raw ByteReader) (result any, err error) {
 	b, err := raw.ReadByte()
 	if err != nil {
 		return nil, err
@@ -54,13 +58,13 @@ func Unmarshal(raw *bytes.Reader) (result any, err error) {
 	}
 }
 
-func UnmarshalInt(raw *bytes.Reader) (int, error) {
+func UnmarshalInt(raw ByteReader) (int, error) {
 	b, err := raw.ReadByte()
 	if err != nil {
 		return 0, err
 	}
 	if b != 'i' {
-		return 0, errors.New("int encoding must begin with 'i'")
+		return 0, errors.New("int: encoding must begin with 'i'")
 	}
 
 	intBytes := make([]byte, 0)
@@ -77,7 +81,7 @@ func UnmarshalInt(raw *bytes.Reader) (int, error) {
 			return 0, err
 		}
 		if b != 'e' {
-			return 0, errors.New("int encoding cannot have leading zeros")
+			return 0, errors.New("int: encoding cannot have leading zeros")
 		}
 	}
 	intBytes = append(intBytes, b)
@@ -85,7 +89,7 @@ func UnmarshalInt(raw *bytes.Reader) (int, error) {
 	for b, err = raw.ReadByte(); err == nil; b, err = raw.ReadByte() {
 		if b < '0' || b > '9' {
 			if b != 'e' {
-				return 0, errors.New("int encoding must end with 'e'")
+				return 0, errors.New("int: encoding must end with 'e'")
 			}
 			break
 		}
@@ -97,13 +101,13 @@ func UnmarshalInt(raw *bytes.Reader) (int, error) {
 	return strconv.Atoi(string(intBytes))
 }
 
-func UnmarshalList(raw *bytes.Reader) ([]any, error) {
+func UnmarshalList(raw ByteReader) ([]any, error) {
 	b, err := raw.ReadByte()
 	if err != nil {
 		return nil, err
 	}
 	if b != 'l' {
-		return nil, errors.New("list encoding must begin with 'l'")
+		return nil, errors.New("list: encoding must begin with 'l'")
 	}
 
 	var l []any
@@ -126,13 +130,13 @@ func UnmarshalList(raw *bytes.Reader) ([]any, error) {
 	}
 }
 
-func UnmarshalDict(raw *bytes.Reader) (map[string]any, error) {
+func UnmarshalDict(raw ByteReader) (map[string]any, error) {
 	b, err := raw.ReadByte()
 	if err != nil {
 		return nil, err
 	}
 	if b != 'd' {
-		return nil, errors.New("dict encoding must begin with 'd'")
+		return nil, errors.New("dict: encoding must begin with 'd'")
 	}
 
 	dict := make(map[string]any)
@@ -145,7 +149,7 @@ func UnmarshalDict(raw *bytes.Reader) (map[string]any, error) {
 			return dict, nil
 		}
 		if err := raw.UnreadByte(); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("dict: unable to parse key: %w", err)
 		}
 
 		key, err := UnmarshalString(raw)
@@ -154,13 +158,13 @@ func UnmarshalDict(raw *bytes.Reader) (map[string]any, error) {
 		}
 		value, err := Unmarshal(raw)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("dict: unable to parse value for %q: %w", key, err)
 		}
 		dict[key] = value
 	}
 }
 
-func UnmarshalString(raw *bytes.Reader) (string, error) {
+func UnmarshalString(raw ByteReader) (string, error) {
 	lenBytes := make([]byte, 0)
 	var b byte
 	var err error
@@ -169,7 +173,7 @@ func UnmarshalString(raw *bytes.Reader) (string, error) {
 			break
 		}
 		if b < '0' || b > '9' {
-			return "", errors.New("string encoding must start with length")
+			return "", errors.New("string: encoding must start with length")
 		}
 		lenBytes = append(lenBytes, b)
 	}
@@ -183,12 +187,9 @@ func UnmarshalString(raw *bytes.Reader) (string, error) {
 	}
 
 	strBytes := make([]byte, strLen, strLen)
-	bytesRead, err := raw.Read(strBytes)
+	bytesRead, err := io.ReadFull(raw, strBytes)
 	if err != nil {
-		return "", err
-	}
-	if bytesRead != strLen {
-		return "", errors.New("declared string length does not match string")
+		return "", fmt.Errorf("string: unable to read declared string length (wanted %d bytes, read %d bytes): %w", strLen, bytesRead, err)
 	}
 	return string(strBytes), err
 }

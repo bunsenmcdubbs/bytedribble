@@ -48,7 +48,7 @@ func TestMarshal(t *testing.T) {
 		},
 		{
 			name: "map[string]int",
-			in: map[string]int{
+			in: map[string]any{
 				"hello": 123,
 				"abc":   -444,
 			},
@@ -56,7 +56,7 @@ func TestMarshal(t *testing.T) {
 		},
 		{
 			name: "map[string]string",
-			in: map[string]string{
+			in: map[string]any{
 				"hello": "world",
 				"abc":   "alphabet",
 			},

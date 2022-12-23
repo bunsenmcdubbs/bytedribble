@@ -23,9 +23,7 @@ func marshal(bs *bytes.Buffer, input any) {
 		marshalList(bs, in)
 	case []int:
 		marshalList(bs, in)
-	case map[string]int:
-		marshalDict(bs, in)
-	case map[string]string:
+	case map[string]any:
 		marshalDict(bs, in)
 	default:
 		panic("unable to marshal type: " + reflect.ValueOf(input).Type().Name())
@@ -70,13 +68,13 @@ func marshalList[T string | int](bs *bytes.Buffer, l []T) {
 	bs.WriteString("e")
 }
 
-func MarshalDict[T string | int](d map[string]T) []byte {
+func MarshalDict(d map[string]any) []byte {
 	bs := &bytes.Buffer{}
 	marshalDict(bs, d)
 	return bs.Bytes()
 }
 
-func marshalDict[T string | int](bs *bytes.Buffer, d map[string]T) {
+func marshalDict(bs *bytes.Buffer, d map[string]any) {
 	var sortedKeys []string
 	for k := range d {
 		sortedKeys = append(sortedKeys, k)
