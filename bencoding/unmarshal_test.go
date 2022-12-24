@@ -29,6 +29,12 @@ func TestUnmarshal(t *testing.T) {
 			wantErr: assert.NoError,
 		},
 		{
+			name:    "zero",
+			raw:     []byte("i0e"),
+			want:    0,
+			wantErr: assert.NoError,
+		},
+		{
 			name:    "invalid number (0 padding)",
 			raw:     []byte("i010e"),
 			wantErr: assert.Error,
@@ -61,8 +67,8 @@ func TestUnmarshal(t *testing.T) {
 		},
 		{
 			name:    "[]int",
-			raw:     []byte("li1ei2ei-10ee"),
-			want:    []any{1, 2, -10},
+			raw:     []byte("li1ei2ei0ei-10ee"),
+			want:    []any{1, 2, 0, -10},
 			wantErr: assert.NoError,
 		},
 		{

@@ -83,6 +83,7 @@ func UnmarshalInt(raw ByteReader) (int, error) {
 		if b != 'e' {
 			return 0, errors.New("int: encoding cannot have leading zeros")
 		}
+		return 0, nil
 	}
 	intBytes = append(intBytes, b)
 
