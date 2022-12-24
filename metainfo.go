@@ -11,15 +11,16 @@ import (
 )
 
 type Metainfo struct {
-	URL            *url.URL          // announce
+	TrackerURL     *url.URL          // announce
 	Name           string            // info.name
 	Hashes         [][sha1.Size]byte // info.pieces
-	PieceSizeBytes int               //info.pieces length
+	PieceSizeBytes int               // info.pieces length
 	TotalSizeBytes int               // info.length
 	Files          []struct {        // info.files
 		SizeBytes int      // length
 		Path      []string // path
 	}
+	RawInfo map[string]any // original map of entire "info" field
 }
 
 func ParseMetainfo(raw io.Reader) (Metainfo, error) {
@@ -33,7 +34,7 @@ func ParseMetainfo(raw io.Reader) (Metainfo, error) {
 	if !ok {
 		return Metainfo{}, errors.New("missing announce url")
 	}
-	meta.URL, err = url.Parse(rawURL)
+	meta.TrackerURL, err = url.Parse(rawURL)
 	if err != nil {
 		return Metainfo{}, err
 	}
@@ -42,6 +43,7 @@ func ParseMetainfo(raw io.Reader) (Metainfo, error) {
 	if !ok || info == nil {
 		return Metainfo{}, errors.New("missing info")
 	}
+	meta.RawInfo = info
 
 	meta.Name, ok = info["name"].(string)
 	if !ok {
@@ -57,7 +59,13 @@ func ParseMetainfo(raw io.Reader) (Metainfo, error) {
 	if length, ok := info["length"].(int); ok {
 		meta.TotalSizeBytes = length
 		numPieces = (meta.TotalSizeBytes + meta.PieceSizeBytes - 1) / meta.PieceSizeBytes
-	} else if files, ok := info["files"].([]any); ok {
+	}
+
+	if files, ok := info["files"].([]any); ok {
+		if meta.TotalSizeBytes != 0 {
+			return Metainfo{}, errors.New("cannot specify total size with multiple files (length and files)")
+		}
+
 		for _, file := range files {
 			parsedFile := struct { // info.files
 				SizeBytes int      // length
@@ -83,10 +91,12 @@ func ParseMetainfo(raw io.Reader) (Metainfo, error) {
 				parsedFile.Path = append(parsedFile.Path, nameString)
 			}
 			meta.Files = append(meta.Files, parsedFile)
+			meta.TotalSizeBytes += parsedFile.SizeBytes
 		}
 		numPieces = len(meta.Files)
 	}
-	if meta.TotalSizeBytes == 0 && len(meta.Files) == 0 {
+
+	if meta.TotalSizeBytes == 0 {
 		return Metainfo{}, errors.New("must specify either file size or include child file metadata")
 	}
 
@@ -103,4 +113,9 @@ func ParseMetainfo(raw io.Reader) (Metainfo, error) {
 	}
 
 	return meta, nil
+}
+
+func (m Metainfo) InfoHash() []byte {
+	hash := sha1.Sum(bencoding.MarshalDict(m.RawInfo))
+	return hash[:]
 }
