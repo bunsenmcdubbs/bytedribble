@@ -1,3 +1,6 @@
+// Package bencoding implements the encoding used by bittorrent metadata and protocols.
+//
+// See: https://www.bittorrent.org/beps/bep_0003.html#bencoding
 package bencoding
 
 import (

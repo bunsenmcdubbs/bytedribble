@@ -51,8 +51,10 @@ const (
 	EmptyEvent     = ""
 )
 
-// SyncTracker syncs Downloader with the tracker.
-// Uploads metrics and current progress and receives a peer list.
+// SyncTracker syncs Downloader with the tracker. Uploads metrics and current progress and receives a peer list.
+//
+// See: https://www.bittorrent.org/beps/bep_0003.html#trackers
+// TODO implement UDP tracker support https://www.bittorrent.org/beps/bep_0015.html
 func (d *Downloader) SyncTracker(ctx context.Context, event Event) error {
 	req, err := d.createTrackerRequest(ctx, event)
 	if err != nil {
@@ -87,6 +89,8 @@ func (d *Downloader) createTrackerRequest(ctx context.Context, event Event) (*ht
 	query.Set("uploaded", "0")                             // TODO fake "uploaded"
 	query.Set("downloaded", "0")                           // TODO fake "downloaded"
 	query.Set("left", strconv.Itoa(d.meta.TotalSizeBytes)) // TODO fake "left"
+	query.Set("compact", "0")                              // Disable compact peer list
+	// TODO implement support for parsing compact peer list https://www.bittorrent.org/beps/bep_0023.html
 	if event != EmptyEvent {
 		query.Set("event", string(event))
 	}

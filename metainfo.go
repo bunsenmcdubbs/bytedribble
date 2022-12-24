@@ -10,6 +10,9 @@ import (
 	"net/url"
 )
 
+// Metainfo describes a torrent.
+//
+// See: https://www.bittorrent.org/beps/bep_0003.html#metainfo-files
 type Metainfo struct {
 	TrackerURL     *url.URL          // announce
 	Name           string            // info.name
@@ -23,6 +26,7 @@ type Metainfo struct {
 	RawInfo map[string]any // original map of entire "info" field
 }
 
+// ParseMetainfo parses a bencoded metainfo file
 func ParseMetainfo(raw io.Reader) (Metainfo, error) {
 	dict, err := bencoding.UnmarshalDict(bufio.NewReader(raw))
 	if err != nil {
