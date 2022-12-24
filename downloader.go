@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/bunsenmcdubbs/bytedribble/bencoding"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -34,11 +33,9 @@ func NewDownloader(target Metainfo, client *http.Client) *Downloader {
 	d := &Downloader{
 		client:    client,
 		meta:      target,
-		peerID:    *new([20]byte),
+		peerID:    RandPeerID(),
 		peerConns: make(map[PeerID]*Peer),
 	}
-	_, _ = rand.Read(d.peerID[:])
-
 	return d
 }
 
@@ -129,7 +126,7 @@ func (d *Downloader) sendTrackerRequest(req *http.Request) (time.Duration, []Pee
 	for _, pd := range peerDicts {
 		p := pd.(map[string]any)
 		pi := PeerInfo{}
-		if id, ok := p["peer id"].(string); !ok || len(id) != peerIDLen {
+		if id, ok := p["peer id"].(string); !ok || len([]byte(id)) != peerIDLen {
 			return 0, nil, errors.New("missing valid peer id")
 		} else {
 			pi.PeerID = PeerIDFromString(id)
@@ -161,4 +158,31 @@ func (d *Downloader) Peers() []PeerInfo {
 		peers = append(peers, conn.info)
 	}
 	return peers
+}
+
+func (d *Downloader) Metainfo() Metainfo {
+	return d.meta
+}
+
+func (d *Downloader) PeerID() PeerID {
+	return d.peerID
+}
+
+func (d *Downloader) ConnectPeer(id PeerID) (*Peer, error) {
+	if id == d.peerID {
+		return nil, errors.New("cannot connect to self")
+	}
+	d.mu.Lock()
+	if _, connected := d.peerConns[id]; connected {
+		d.mu.Unlock()
+		return nil, errors.New("already connected to peer")
+	}
+	info, known := d.newPeers[id]
+	d.mu.Unlock()
+	if !known {
+		return nil, errors.New("unknown peer id")
+	}
+
+	p := NewPeer(info, d)
+	return p, nil
 }

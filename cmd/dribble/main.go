@@ -39,5 +39,24 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	fmt.Println("Peers:", d.Peers())
+	fmt.Println("Client ID:", d.PeerID())
+	peers := d.Peers()
+	fmt.Println("Peers:", peers)
+
+	var peer *bytedribble.Peer
+	for _, info := range peers {
+		log.Println("connecting to", info)
+		peer, err = d.ConnectPeer(info.PeerID)
+		if err != nil {
+			log.Println("err:", err)
+		}
+		if peer != nil {
+			break
+		}
+	}
+	if peer == nil {
+		log.Fatalln("unable to connect to any peer")
+	}
+
+	fmt.Println(peer.Initialize(context.Background()))
 }
