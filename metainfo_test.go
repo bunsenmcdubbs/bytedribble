@@ -14,5 +14,8 @@ func TestParseMetainfo_Ubuntu(t *testing.T) {
 
 	meta, err := ParseMetainfo(f)
 	assert.NoError(t, err)
-	t.Log(meta)
+	assert.Equal(t, "https://torrent.ubuntu.com/announce", meta.TrackerURL.String())
+	assert.Equal(t, "ubuntu-22.04.1-live-server-amd64.iso", meta.Name)
+	assert.Equal(t, 5627, len(meta.Hashes))
+	assert.Equal(t, 1474873344, meta.TotalSizeBytes)
 }
