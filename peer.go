@@ -128,15 +128,15 @@ func validateHeader(header []byte) error {
 type MessageType byte
 
 const (
-	Choke MessageType = iota
-	Unchoke
-	Interested
-	NotInterested
-	Have
-	Bitfield
-	Request
-	Piece
-	Cancel
+	ChokeMessage MessageType = iota
+	UnchokeMessage
+	InterestedMessage
+	NotInterestedMessage
+	HaveMessage
+	BitfieldMessage
+	RequestMessage
+	PieceMessage
+	CancelMessage
 )
 
 func (p *Peer) Run(ctx context.Context) error {
@@ -192,21 +192,21 @@ func (p *Peer) keepAlive(ctx context.Context) {
 func (p *Peer) handleMessage(msgLen uint32, typ MessageType) error {
 	log.Println("Received message. Length:", msgLen)
 	switch typ {
-	case Choke:
+	case ChokeMessage:
 		fmt.Println("Choke")
 		if !p.choked {
 			p.unchokedCh = make(chan struct{}, 0)
 		}
-	case Unchoke:
+	case UnchokeMessage:
 		fmt.Println("Unchoke")
 		close(p.unchokedCh)
-	case Interested:
+	case InterestedMessage:
 		fmt.Println("Interested")
-	case NotInterested:
+	case NotInterestedMessage:
 		fmt.Println("Not interested")
-	case Have:
+	case HaveMessage:
 		fmt.Println("Have")
-	case Bitfield:
+	case BitfieldMessage:
 		fmt.Println("Bitfield")
 		length := msgLen - 1
 		bitfield := make([]byte, length, length)
@@ -215,9 +215,10 @@ func (p *Peer) handleMessage(msgLen uint32, typ MessageType) error {
 			return err
 		}
 		fmt.Println(hex.Dump(bitfield))
-	case Request:
+		// TODO validate bitfield
+	case RequestMessage:
 		fmt.Println("Request")
-	case Piece:
+	case PieceMessage:
 		fmt.Println("Piece")
 		length := msgLen - 9
 		header := make([]byte, 8, 8)
@@ -247,7 +248,7 @@ func (p *Peer) handleMessage(msgLen uint32, typ MessageType) error {
 		if err != nil {
 			return err
 		}
-	case Cancel:
+	case CancelMessage:
 		fmt.Println("Cancel")
 	default:
 		return fmt.Errorf("unrecognized message type: %d", typ)
@@ -257,12 +258,12 @@ func (p *Peer) handleMessage(msgLen uint32, typ MessageType) error {
 
 func (p *Peer) Choke() error {
 	log.Println("Sending Choke")
-	_, err := p.conn.Write([]byte{0, 0, 0, 1, byte(Choke)})
+	_, err := p.conn.Write([]byte{0, 0, 0, 1, byte(ChokeMessage)})
 	return err
 }
 func (p *Peer) Unchoke() error {
 	log.Println("Sending Unchoke")
-	_, err := p.conn.Write([]byte{0, 0, 0, 1, byte(Unchoke)})
+	_, err := p.conn.Write([]byte{0, 0, 0, 1, byte(UnchokeMessage)})
 	return err
 }
 
@@ -273,7 +274,7 @@ func (p *Peer) Interested() error {
 	if p.interested {
 		return nil
 	}
-	if n, err := p.conn.Write([]byte{0, 0, 0, 1, byte(Interested)}); err != nil {
+	if n, err := p.conn.Write([]byte{0, 0, 0, 1, byte(InterestedMessage)}); err != nil {
 		return err
 	} else {
 		fmt.Printf("wrote %d bytes\n", n)
@@ -289,7 +290,7 @@ func (p *Peer) NotInterested() error {
 	if !p.interested {
 		return nil
 	}
-	if _, err := p.conn.Write([]byte{0, 0, 0, 1, byte(NotInterested)}); err != nil {
+	if _, err := p.conn.Write([]byte{0, 0, 0, 1, byte(NotInterestedMessage)}); err != nil {
 		return err
 	}
 	p.interested = false
@@ -298,7 +299,7 @@ func (p *Peer) NotInterested() error {
 
 func (p *Peer) Have(pieceIdx uint32) error {
 	log.Printf("Sending Have. Piece %d", pieceIdx)
-	bs := []byte{0, 0, 0, 5, byte(Have)}
+	bs := []byte{0, 0, 0, 5, byte(HaveMessage)}
 	binary.BigEndian.AppendUint32(bs, pieceIdx)
 	_, err := p.conn.Write(bs)
 	return err
