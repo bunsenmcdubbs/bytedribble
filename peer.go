@@ -25,9 +25,9 @@ type Peer struct {
 	d *Downloader
 
 	reqMu    sync.Mutex
-	inFlight map[RequestParams]requestCallback
-	requestQ chan RequestParams
-	cancelQ  chan RequestParams
+	inFlight map[Block]requestCallback
+	requestQ chan Block
+	cancelQ  chan Block
 
 	info PeerInfo
 	conn net.Conn
@@ -44,9 +44,9 @@ type Peer struct {
 func NewPeer(info PeerInfo, d *Downloader) *Peer {
 	return &Peer{
 		d:          d,
-		inFlight:   make(map[RequestParams]requestCallback),
-		requestQ:   make(chan RequestParams),
-		cancelQ:    make(chan RequestParams),
+		inFlight:   make(map[Block]requestCallback),
+		requestQ:   make(chan Block),
+		cancelQ:    make(chan Block),
 		info:       info,
 		interested: false,
 		choked:     true,
@@ -233,7 +233,7 @@ func (p *Peer) handleMessage(msgLen uint32, typ MessageType) error {
 		if err != nil {
 			piecePayload = nil
 		}
-		req := RequestParams{
+		req := Block{
 			PieceIndex:  pieceIdx,
 			BeginOffset: beginOffset,
 			Length:      length,
@@ -305,39 +305,13 @@ func (p *Peer) Have(pieceIdx uint32) error {
 	return err
 }
 
-type RequestParams struct {
-	PieceIndex  uint32
-	BeginOffset uint32
-	Length      uint32
-}
-
-func (r RequestParams) requestMessage() []byte {
-	b := make([]byte, 0, 17)
-	b = binary.BigEndian.AppendUint32(b, 13)
-	b = append(b, byte(Request))
-	b = binary.BigEndian.AppendUint32(b, r.PieceIndex)
-	b = binary.BigEndian.AppendUint32(b, r.BeginOffset)
-	b = binary.BigEndian.AppendUint32(b, r.Length)
-	return b
-}
-
-func (r RequestParams) cancelMessage() []byte {
-	b := make([]byte, 0, 17)
-	b = binary.BigEndian.AppendUint32(b, 13)
-	b = append(b, byte(Cancel))
-	b = binary.BigEndian.AppendUint32(b, r.PieceIndex)
-	b = binary.BigEndian.AppendUint32(b, r.BeginOffset)
-	b = binary.BigEndian.AppendUint32(b, r.Length)
-	return b
-}
-
-func (p *Peer) Request(params RequestParams) error {
+func (p *Peer) Request(params Block) error {
 	log.Println("Sending Request")
 	_, err := p.conn.Write(params.requestMessage())
 	return err
 }
 
-func (p *Peer) Cancel(param RequestParams) error {
+func (p *Peer) Cancel(param Block) error {
 	log.Println("Sending Cancel")
 	_, err := p.conn.Write(param.cancelMessage())
 	return err
@@ -361,7 +335,7 @@ func (p *Peer) StartDownload(ctx context.Context) error {
 	}
 }
 
-func (p *Peer) EnqueueRequest(ctx context.Context, req RequestParams) ([]byte, error) {
+func (p *Peer) EnqueueRequest(ctx context.Context, req Block) ([]byte, error) {
 	// TODO remove ctx?
 	var piece []byte
 	errCh := make(chan error, 1)
@@ -393,7 +367,7 @@ func (p *Peer) EnqueueRequest(ctx context.Context, req RequestParams) ([]byte, e
 	return piece, err
 }
 
-func (p *Peer) CancelRequest(req RequestParams) error {
+func (p *Peer) CancelRequest(req Block) error {
 	var exists bool
 	p.reqMu.Lock()
 	_, exists = p.inFlight[req]
