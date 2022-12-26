@@ -108,8 +108,8 @@ func ParseMetainfo(raw io.Reader) (Metainfo, error) {
 	if !ok {
 		return Metainfo{}, errors.New("missing piece hashes")
 	}
-	if len(hashes) != numPieces*sha1.Size {
-		return Metainfo{}, errors.New("piece hashes are invalid")
+	if len([]byte(hashes)) != numPieces*sha1.Size {
+		return Metainfo{}, fmt.Errorf("%w: expected %d bytes, got %d)", errors.New("piece hashes are invalid"), numPieces*sha1.Size, len([]byte(hashes)))
 	}
 	meta.Hashes = make([][sha1.Size]byte, numPieces, numPieces)
 	for i := range meta.Hashes {

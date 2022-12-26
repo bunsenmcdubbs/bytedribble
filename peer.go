@@ -101,7 +101,7 @@ func (p *Peer) Initialize(ctx context.Context) (err error) {
 		return err
 	}
 	if p.info.PeerID.String() != string(resp) {
-		return errors.New("mismatched peer id")
+		return fmt.Errorf("%w. got %s", errors.New("mismatched peer id"), p.info.PeerID.String())
 	}
 
 	return nil
