@@ -75,6 +75,7 @@ func (w *Worker) RequestPiece(p *Piece) {
 	w.mu.Lock()
 	w.inProgress[p.Index] = p
 	w.mu.Unlock()
+	// TODO fix bug with request queue. Worker is sending duplicate requests to peer
 	select {
 	case w.sendNextRequest <- struct{}{}:
 	default:

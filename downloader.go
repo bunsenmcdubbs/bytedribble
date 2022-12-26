@@ -42,6 +42,7 @@ func (d *Downloader) Start(ctx context.Context) {
 		// TODO better error handling
 	}
 
+	// TODO refactor this into a more legible, resilient, and correct form
 	var pieceMu sync.Mutex
 	pending := make(map[uint32]*Piece)
 	inProgress := make(map[uint32]*Piece)
@@ -77,6 +78,7 @@ func (d *Downloader) Start(ctx context.Context) {
 		defer pieceMu.Unlock()
 		delete(inProgress, p.Index)
 		complete[p.Index] = p
+		// TODO announce HAVE piece to all peers
 		log.Println("Finished piece", p)
 		if len(pending) == 0 && len(inProgress) == 0 {
 			log.Println("Done with all pieces")
