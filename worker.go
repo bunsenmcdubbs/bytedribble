@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/bunsenmcdubbs/bytedribble/internal"
 	"log"
 	"sync"
 )
@@ -102,7 +103,7 @@ func (w *Worker) requesterLoop(ctx context.Context) {
 		}
 		w.mu.Unlock()
 		if foundBlock {
-			err := RetryWithExpBackoff(ctx, func(ctx context.Context) error {
+			err := internal.RetryWithExpBackoff(ctx, func(ctx context.Context) error {
 				return w.requestBlock(ctx, block)
 			}, 1, 5)
 			if err != nil {

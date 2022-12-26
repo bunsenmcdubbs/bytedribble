@@ -1,4 +1,4 @@
-package bytedribble
+package internal
 
 import (
 	"context"
