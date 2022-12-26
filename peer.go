@@ -3,7 +3,6 @@ package bytedribble
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/bunsenmcdubbs/bytedribble/internal"
@@ -22,35 +21,32 @@ type PeerInfo struct {
 }
 
 type Peer struct {
-	d *Downloader
+	self     PeerID
+	infohash []byte
+	info     PeerInfo
+	conn     net.Conn
+	stopOnce sync.Once
+	stopC    chan struct{}
 
-	reqMu    sync.Mutex
-	inFlight map[Block]requestCallback
-	requestQ chan Block
-	cancelQ  chan Block
+	subscriber chan<- Message
 
-	info PeerInfo
-	conn net.Conn
+	peerHas Bitfield // peer's Bitfield
 
 	// Local's interest in remote peer
 	interestedMu sync.Mutex
 	interested   bool
 
-	// Remote's choke/unchoke status on local peer
-	choked     bool
-	unchokedCh chan struct{} // closed if and only if channel is unchoked
+	unchokedCh chan struct{} // closed if and only if peer has unchoked us
 }
 
-func NewPeer(info PeerInfo, d *Downloader) *Peer {
+func NewPeer(info PeerInfo, self PeerID, infohash []byte, numPieces int) *Peer {
 	return &Peer{
-		d:          d,
-		inFlight:   make(map[Block]requestCallback),
-		requestQ:   make(chan Block),
-		cancelQ:    make(chan Block),
+		self:       self,
+		infohash:   infohash,
 		info:       info,
-		interested: false,
-		choked:     true,
-		unchokedCh: make(chan struct{}, 0),
+		stopC:      make(chan struct{}),
+		peerHas:    EmptyBitfield(numPieces),
+		unchokedCh: make(chan struct{}),
 	}
 }
 
@@ -70,13 +66,13 @@ func (p *Peer) Initialize(ctx context.Context) (err error) {
 		Port: p.info.Port,
 	}).String())
 
-	p.conn = internal.Eavesdropper{Conn: p.conn}
+	p.conn = internal.NewEavesdropper(p.conn)
 
 	if err != nil {
 		return err
 	}
 
-	msg := append([]byte(defaultHeader), p.d.Metainfo().InfoHash()...)
+	msg := append([]byte(defaultHeader), p.infohash...)
 	_, err = p.conn.Write(msg)
 	if err != nil {
 		return err
@@ -94,7 +90,7 @@ func (p *Peer) Initialize(ctx context.Context) (err error) {
 		return errors.New("mismatched infohash")
 	}
 
-	_, err = p.conn.Write(p.d.PeerID().Bytes())
+	_, err = p.conn.Write(p.self.Bytes())
 	if err != nil {
 		return err
 	}
@@ -125,6 +121,11 @@ func validateHeader(header []byte) error {
 	return nil
 }
 
+type Message struct {
+	Type    MessageType
+	Payload []byte
+}
+
 type MessageType byte
 
 const (
@@ -139,121 +140,96 @@ const (
 	CancelMessage
 )
 
-func (p *Peer) Run(ctx context.Context) error {
-	childCtx, cancelCtx := context.WithCancel(ctx)
-	defer cancelCtx()
-	go func() { p.keepAlive(childCtx) }()
+func (p *Peer) Run() error {
+	go func() { p.keepAliveLoop() }()
 	go func() {
-		<-ctx.Done()
+		<-p.stopC
 		_ = p.conn.SetDeadline(time.Now())
 	}()
 	defer p.conn.Close()
+	defer p.Close()
+
 	for {
-		if ctx.Err() != nil {
+		select {
+		case <-p.stopC:
 			return nil
+		default:
 		}
 
 		log.Println("Waiting for next message from remote")
 		header := make([]byte, 5)
-		nBytes, err := io.ReadFull(p.conn, header)
+		_, err := io.ReadFull(p.conn, header)
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			continue
-		} else if err != nil {
 			return fmt.Errorf("unable to read message: %w", err)
 		}
 
-		log.Printf("Received raw bytes: %v\n", header)
-		if nBytes == 5 {
-			err := p.handleMessage(binary.BigEndian.Uint32(header[:4]), MessageType(header[4]))
-			if err != nil {
-				return err
+		messageType := MessageType(header[4])
+
+		payload := make([]byte, binary.BigEndian.Uint32(header[:4])-1, binary.BigEndian.Uint32(header[:4])-1)
+		_, err = io.ReadFull(p.conn, payload)
+		if err != nil {
+			return fmt.Errorf("unable to read message: %w", err)
+		}
+
+		// TODO handle interested/uninterested
+		switch messageType {
+		case ChokeMessage:
+			select {
+			case <-p.unchokedCh:
+				p.unchokedCh = make(chan struct{})
+			default:
+			}
+		case UnchokeMessage:
+			select {
+			case <-p.unchokedCh:
+			default:
+				close(p.unchokedCh)
+			}
+		case HaveMessage:
+			p.peerHas.Have(int(binary.BigEndian.Uint32(payload)))
+		case BitfieldMessage:
+			if p.peerHas.Empty() {
+				p.peerHas = payload // TODO validate
+			}
+		}
+
+		if p.subscriber != nil {
+			select {
+			case p.subscriber <- Message{
+				Type:    messageType,
+				Payload: payload,
+			}:
+			default:
 			}
 		}
 	}
 }
 
-func (p *Peer) keepAlive(ctx context.Context) {
+func (p *Peer) keepAliveLoop() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-p.stopC:
 			return
 		case <-ticker.C:
 			log.Println("sending keepalive")
-			_, err := p.conn.Write([]byte{0})
-			if err != nil {
+			if err := p.KeepAlive(); err != nil {
 				log.Println("failed to send keepalive:", err)
 			}
 		}
 	}
 }
 
-func (p *Peer) handleMessage(msgLen uint32, typ MessageType) error {
-	log.Println("Received message. Length:", msgLen)
-	switch typ {
-	case ChokeMessage:
-		fmt.Println("Choke")
-		if !p.choked {
-			p.unchokedCh = make(chan struct{}, 0)
-		}
-	case UnchokeMessage:
-		fmt.Println("Unchoke")
-		close(p.unchokedCh)
-	case InterestedMessage:
-		fmt.Println("Interested")
-	case NotInterestedMessage:
-		fmt.Println("Not interested")
-	case HaveMessage:
-		fmt.Println("Have")
-	case BitfieldMessage:
-		fmt.Println("Bitfield")
-		length := msgLen - 1
-		bitfield := make([]byte, length, length)
-		_, err := io.ReadFull(p.conn, bitfield)
-		if err != nil {
-			return err
-		}
-		fmt.Println(hex.Dump(bitfield))
-		// TODO validate bitfield
-	case RequestMessage:
-		fmt.Println("Request")
-	case PieceMessage:
-		fmt.Println("Piece")
-		length := msgLen - 9
-		header := make([]byte, 8, 8)
-		_, err := io.ReadFull(p.conn, header)
-		if err != nil {
-			return err
-		}
-		pieceIdx := binary.BigEndian.Uint32(header[:4])
-		beginOffset := binary.BigEndian.Uint32(header[4:])
-		piecePayload := make([]byte, length, length)
-		_, err = io.ReadFull(p.conn, piecePayload)
-		if err != nil {
-			piecePayload = nil
-		}
-		req := Block{
-			PieceIndex:  pieceIdx,
-			BeginOffset: beginOffset,
-			Length:      length,
-		}
-		p.reqMu.Lock()
-		callback, exists := p.inFlight[req]
-		if exists {
-			callback(piecePayload, err)
-			delete(p.inFlight, req)
-		}
-		p.reqMu.Unlock()
-		if err != nil {
-			return err
-		}
-	case CancelMessage:
-		fmt.Println("Cancel")
-	default:
-		return fmt.Errorf("unrecognized message type: %d", typ)
-	}
-	return nil
+func (p *Peer) KeepAlive() error {
+	_, err := p.conn.Write([]byte{0})
+	return err
+}
+
+func (p *Peer) Close() {
+	p.stopOnce.Do(func() {
+		close(p.stopC)
+	})
 }
 
 func (p *Peer) Choke() error {
@@ -274,10 +250,8 @@ func (p *Peer) Interested() error {
 	if p.interested {
 		return nil
 	}
-	if n, err := p.conn.Write([]byte{0, 0, 0, 1, byte(InterestedMessage)}); err != nil {
+	if _, err := p.conn.Write([]byte{0, 0, 0, 1, byte(InterestedMessage)}); err != nil {
 		return err
-	} else {
-		fmt.Printf("wrote %d bytes\n", n)
 	}
 	p.interested = true
 	return nil
@@ -317,67 +291,27 @@ func (p *Peer) Cancel(param Block) error {
 	return err
 }
 
-type requestCallback func(piece []byte, err error)
+func (p *Peer) Info() PeerInfo {
+	return p.info
+}
 
 func (p *Peer) Unchoked() <-chan struct{} {
 	return p.unchokedCh
 }
 
-func (p *Peer) StartDownload(ctx context.Context) error {
-	if err := p.Interested(); err != nil {
-		return err
+func (p *Peer) Subscribe(messageCh chan<- Message) error {
+	if p.subscriber != nil && p.subscriber != messageCh {
+		return errors.New("a different subscriber is already listening")
 	}
-	select {
-	case <-p.Unchoked():
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	p.subscriber = messageCh
+	return nil
 }
 
-func (p *Peer) EnqueueRequest(ctx context.Context, req Block) ([]byte, error) {
-	// TODO remove ctx?
-	var piece []byte
-	errCh := make(chan error, 1)
-	defer close(errCh)
-
-	p.reqMu.Lock()
-	if _, exists := p.inFlight[req]; exists {
-		p.reqMu.Unlock()
-		return nil, errors.New("request already in flight")
+func (p *Peer) Unsubscribe(messageCh chan<- Message) error {
+	// TODO check if this (in)equality actually works
+	if p.subscriber != messageCh {
+		return errors.New("not currently subscribed")
 	}
-	p.inFlight[req] = func(pieceResp []byte, errResp error) {
-		piece = pieceResp
-		errCh <- errResp
-	}
-	p.reqMu.Unlock()
-
-	if err := p.Request(req); err != nil {
-		_ = p.CancelRequest(req)
-		return nil, err
-	}
-
-	log.Println("Sent request. Waiting for response...")
-	var err error
-	select {
-	case <-ctx.Done():
-	case err = <-errCh:
-	}
-
-	return piece, err
-}
-
-func (p *Peer) CancelRequest(req Block) error {
-	var exists bool
-	p.reqMu.Lock()
-	_, exists = p.inFlight[req]
-	delete(p.inFlight, req)
-	p.reqMu.Unlock()
-	if !exists {
-		return nil
-	}
-	if err := p.Cancel(req); err != nil {
-		return err
-	}
+	p.subscriber = nil
 	return nil
 }

@@ -1,188 +1,159 @@
 package bytedribble
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"github.com/bunsenmcdubbs/bytedribble/bencoding"
-	"net"
+	"golang.org/x/sync/errgroup"
+	"log"
 	"net/http"
-	"net/url"
-	"strconv"
 	"sync"
-	"time"
 )
 
 type Downloader struct {
-	client *http.Client
-
-	meta   Metainfo
-	peerID PeerID
-
-	// TODO add self IP and port
-	// TODO add metrics uploaded, downloaded, left
-
-	mu        sync.Mutex
-	interval  time.Duration
-	newPeers  map[PeerID]PeerInfo
-	peerConns map[PeerID]*Peer
+	tc     *TrackerClient
+	target Metainfo
+	self   PeerInfo
 }
 
-func NewDownloader(target Metainfo, client *http.Client) *Downloader {
+func NewDownloader(target Metainfo, self PeerInfo) *Downloader {
 	d := &Downloader{
-		client:    client,
-		meta:      target,
-		peerID:    RandPeerID(),
-		peerConns: make(map[PeerID]*Peer),
+		tc:     NewTrackerClient(http.DefaultClient, target, self, FakeMetrics{TotalSize: target.TotalSizeBytes}),
+		target: target,
+		self:   self,
 	}
 	return d
 }
 
-type Event string
+func (d *Downloader) Start(ctx context.Context) {
+	go func() {
+		for {
+			err := d.tc.Run(ctx)
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			log.Println("Sync tracker error:", err)
+		}
+	}()
 
-const (
-	StartedEvent   = "started"
-	StoppedEvent   = "stopped"
-	CompletedEvent = "completed"
-	EmptyEvent     = ""
-)
-
-// SyncTracker syncs Downloader with the tracker. Uploads metrics and current progress and receives a peer list.
-//
-// See: https://www.bittorrent.org/beps/bep_0003.html#trackers
-// TODO implement UDP tracker support https://www.bittorrent.org/beps/bep_0015.html
-func (d *Downloader) SyncTracker(ctx context.Context, event Event) error {
-	req, err := d.createTrackerRequest(ctx, event)
+	peers, err := d.tc.RequestNewPeers(ctx) // TODO better peer list API
 	if err != nil {
-		return fmt.Errorf("failed to create tracker request: %w", err)
-	}
-	interval, peers, err := d.sendTrackerRequest(req)
-	if err != nil {
-		return err
+		log.Println("Failed to get new peers")
+		// TODO better error handling
 	}
 
-	newPeers := make(map[PeerID]PeerInfo)
-	d.mu.Lock()
-	d.interval = interval
-	for _, peer := range peers {
-		if _, connected := d.peerConns[peer.PeerID]; connected {
+	var pieceMu sync.Mutex
+	pending := make(map[uint32]*Piece)
+	inProgress := make(map[uint32]*Piece)
+	complete := make(map[uint32]*Piece)
+	for idx, hash := range d.target.Hashes {
+		size := d.target.TotalSizeBytes % d.target.PieceSizeBytes
+		if idx != len(d.target.Hashes)-1 {
+			size = d.target.PieceSizeBytes
+		}
+		pending[uint32(idx)] = &Piece{
+			Index:     uint32(idx),
+			Size:      uint32(size),
+			BlockSize: DefaultBlockLength,
+			Hash:      hash,
+		}
+		log.Println("Pending piece", pending[uint32(idx)])
+	}
+
+	startNextPiece := func() *Piece {
+		pieceMu.Lock()
+		defer pieceMu.Unlock()
+		for _, next := range pending {
+			delete(pending, next.Index)
+			inProgress[next.Index] = next
+			return next
+		}
+		return nil
+	}
+	var doneOnce sync.Once
+	doneC := make(chan struct{})
+	completePiece := func(p *Piece) {
+		pieceMu.Lock()
+		defer pieceMu.Unlock()
+		delete(inProgress, p.Index)
+		complete[p.Index] = p
+		log.Println("Finished piece", p)
+		if len(pending) == 0 && len(inProgress) == 0 {
+			log.Println("Done with all pieces")
+			doneOnce.Do(func() {
+				close(doneC)
+			})
+		}
+	}
+	failPiece := func(p *Piece) {
+		pieceMu.Lock()
+		defer pieceMu.Unlock()
+		delete(inProgress, p.Index)
+		// TODO maybe this doesn't work?
+		p.Reset()
+		pending[p.Index] = p
+	}
+
+	workersGroup, workersCtx := errgroup.WithContext(ctx)
+	workersGroup.SetLimit(2) // TODO configure this limit
+
+	var workersMu sync.Mutex
+	workers := make(map[PeerID]*Worker)
+
+	for _, info := range peers {
+		log.Println("Attempting to connect to", info)
+		if info.PeerID == d.self.PeerID {
 			continue
 		}
-		newPeers[peer.PeerID] = peer
-	}
-	d.newPeers = newPeers
-	d.mu.Unlock()
+		func(info PeerInfo) {
+			workersGroup.Go(func() (err error) {
+				defer func() {
+					if err != nil {
+						log.Printf("peer %s disconnected: %v", info.PeerID, err)
+						err = nil
+						workersMu.Lock()
+						delete(workers, info.PeerID)
+						workersMu.Unlock()
+					}
+				}()
 
-	return nil
-}
+				workersMu.Lock()
+				if _, exists := workers[info.PeerID]; exists {
+					// TODO eat this error
+					return errors.New("already connected")
+				}
+				peer := NewPeer(info, d.self.PeerID, d.target.InfoHash(), len(d.target.Hashes))
+				worker := NewWorker(peer)
+				worker.SetCallback(func(piece *Piece, err error) {
+					if err != nil {
+						log.Println("failed download:", err)
+						failPiece(piece)
+					} else {
+						completePiece(piece)
+					}
+					next := startNextPiece()
+					if next != nil {
+						worker.RequestPiece(next)
+					}
+				})
+				workers[info.PeerID] = worker
+				workersMu.Unlock()
 
-func (d *Downloader) createTrackerRequest(ctx context.Context, event Event) (*http.Request, error) {
-	query := url.Values{}
-	query.Set("info_hash", string(d.meta.InfoHash()))
-	query.Set("peer_id", string(d.peerID[:]))
-	// TODO ip? (optional)
-	query.Set("port", "6881")                              // TODO fake port
-	query.Set("uploaded", "0")                             // TODO fake "uploaded"
-	query.Set("downloaded", "0")                           // TODO fake "downloaded"
-	query.Set("left", strconv.Itoa(d.meta.TotalSizeBytes)) // TODO fake "left"
-	query.Set("compact", "0")                              // Disable compact peer list
-	// TODO implement support for parsing compact peer list https://www.bittorrent.org/beps/bep_0023.html
-	if event != EmptyEvent {
-		query.Set("event", string(event))
-	}
-	return http.NewRequestWithContext(ctx, http.MethodGet, d.meta.TrackerURL.String()+"?"+query.Encode(), nil)
-}
+				if err = peer.Initialize(workersCtx); err != nil {
+					return fmt.Errorf("unable to initialize connection: %w", err)
+				}
 
-func (d *Downloader) sendTrackerRequest(req *http.Request) (time.Duration, []PeerInfo, error) {
-	rawResp, err := d.client.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	if rawResp.StatusCode != http.StatusOK {
-		return 0, nil, fmt.Errorf("tracker responded with unexpected HTTP error code: %d", rawResp.StatusCode)
-	}
-
-	defer rawResp.Body.Close()
-	resp, err := bencoding.UnmarshalDict(bufio.NewReader(rawResp.Body))
-	if err != nil {
-		return 0, nil, fmt.Errorf("failed to parse tracker response: %w", err)
-	}
-
-	if failure, ok := resp["failure"]; ok {
-		return 0, nil, fmt.Errorf("tracker returned error: %s", failure.(string))
-	}
-
-	intervalSeconds, ok := resp["interval"].(int)
-	if !ok {
-		return 0, nil, errors.New("missing interval")
-	}
-
-	var peers []PeerInfo
-	peerDicts, ok := resp["peers"].([]any)
-	if !ok {
-		return 0, nil, errors.New("missing peer list")
-	}
-	for _, pd := range peerDicts {
-		p := pd.(map[string]any)
-		pi := PeerInfo{}
-		if id, ok := p["peer id"].(string); !ok || len([]byte(id)) != peerIDLen {
-			return 0, nil, errors.New("missing valid peer id")
-		} else {
-			pi.PeerID = PeerIDFromString(id)
-		}
-		if ipString, ok := p["ip"].(string); !ok {
-			return 0, nil, errors.New("missing peer ip address")
-		} else {
-			pi.IP = net.ParseIP(ipString)
-		}
-		if port, ok := p["port"].(int); !ok {
-			return 0, nil, errors.New("missing peer port number")
-		} else {
-			pi.Port = port
-		}
-		peers = append(peers, pi)
+				go worker.Run(ctx)
+				next := startNextPiece()
+				if next != nil {
+					worker.RequestPiece(next)
+				}
+				<-doneC
+				return nil
+			})
+		}(info)
 	}
 
-	return time.Duration(intervalSeconds) * time.Second, peers, nil
-}
-
-func (d *Downloader) Peers() []PeerInfo {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	var peers []PeerInfo
-	for _, peer := range d.newPeers {
-		peers = append(peers, peer)
-	}
-	for _, conn := range d.peerConns {
-		peers = append(peers, conn.info)
-	}
-	return peers
-}
-
-func (d *Downloader) Metainfo() Metainfo {
-	return d.meta
-}
-
-func (d *Downloader) PeerID() PeerID {
-	return d.peerID
-}
-
-func (d *Downloader) ConnectPeer(id PeerID) (*Peer, error) {
-	if id == d.peerID {
-		return nil, errors.New("cannot connect to self")
-	}
-	d.mu.Lock()
-	if _, connected := d.peerConns[id]; connected {
-		d.mu.Unlock()
-		return nil, errors.New("already connected to peer")
-	}
-	info, known := d.newPeers[id]
-	d.mu.Unlock()
-	if !known {
-		return nil, errors.New("unknown peer id")
-	}
-
-	p := NewPeer(info, d)
-	return p, nil
+	log.Println("Workers finished! Error:", workersGroup.Wait())
+	log.Println("Notified tracker. Error: ", d.tc.Completed(ctx))
 }

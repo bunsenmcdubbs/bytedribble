@@ -2,6 +2,8 @@ package bytedribble
 
 import "encoding/binary"
 
+const DefaultBlockLength = 1 << 14
+
 type Block struct {
 	PieceIndex  uint32
 	BeginOffset uint32
