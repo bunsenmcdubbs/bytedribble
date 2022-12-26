@@ -9,13 +9,20 @@ const defaultPrintLimit = 50
 
 type Eavesdropper struct {
 	net.Conn
-	PrintLimit int
+	limit int
+}
+
+func NewEavesdropper(conn net.Conn) *Eavesdropper {
+	return &Eavesdropper{
+		Conn:  conn,
+		limit: defaultPrintLimit,
+	}
 }
 
 func (e Eavesdropper) Read(buf []byte) (n int, err error) {
 	n, err = e.Conn.Read(buf)
-	if e.PrintLimit != -1 || (e.PrintLimit == 0 && n > defaultPrintLimit) || (e.PrintLimit > 0 && n > e.PrintLimit) {
-		log.Printf("Read raw bytes: %v [%d more bytes elided...]", buf[:e.PrintLimit], len(buf)-e.PrintLimit)
+	if e.limit != -1 && n > e.limit {
+		log.Printf("Read raw bytes: %v [%d more bytes elided...]", buf[:e.limit], n-e.limit)
 	} else {
 		log.Printf("Read raw bytes: %v\n", buf)
 	}
@@ -24,8 +31,8 @@ func (e Eavesdropper) Read(buf []byte) (n int, err error) {
 
 func (e Eavesdropper) Write(buf []byte) (n int, err error) {
 	n, err = e.Conn.Write(buf)
-	if e.PrintLimit != -1 || (e.PrintLimit == 0 && n > defaultPrintLimit) || (e.PrintLimit > 0 && n > e.PrintLimit) {
-		log.Printf("Wrote raw bytes: %v [%d more bytes elided...]", buf[:e.PrintLimit], len(buf)-e.PrintLimit)
+	if e.limit != -1 && n > e.limit {
+		log.Printf("Wrote raw bytes: %v [%d more bytes elided...]", buf[:e.limit], n-e.limit)
 	} else {
 		log.Printf("Wrote raw bytes: %v\n", buf)
 	}
