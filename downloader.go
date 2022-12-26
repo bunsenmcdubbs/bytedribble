@@ -7,7 +7,9 @@ import (
 	"golang.org/x/sync/errgroup"
 	"log"
 	"net/http"
+	"os"
 	"sync"
+	"time"
 )
 
 type Downloader struct {
@@ -158,4 +160,31 @@ func (d *Downloader) Start(ctx context.Context) {
 
 	log.Println("Workers finished! Error:", workersGroup.Wait())
 	log.Println("Notified tracker. Error: ", d.tc.Completed(ctx))
+	// Lock forever! We are done now.
+	pieceMu.Lock()
+
+	f, err := os.Create(time.Now().Format(time.RFC3339) + d.target.Name)
+	if err != nil {
+		log.Println("Unable to create file", d.target.Name, err)
+		return
+	}
+	defer f.Close()
+	log.Println("Writing downloaded file to disk", f.Name())
+
+	for idx := range d.target.Hashes {
+		p, ok := complete[uint32(idx)]
+		if !ok {
+			log.Println("Missing piece", idx)
+			return
+		}
+		if !p.Valid() {
+			log.Println("So-called 'completed' piece is invalid", p)
+			return
+		}
+		if _, err = f.Write(p.Payload()); err != nil {
+			log.Println("Failed to write piece to file", p, err)
+			return
+		}
+	}
+
 }
