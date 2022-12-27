@@ -62,7 +62,6 @@ func ParseMetainfo(raw io.Reader) (Metainfo, error) {
 	var numPieces int
 	if length, ok := info["length"].(int); ok {
 		meta.TotalSizeBytes = length
-		numPieces = (meta.TotalSizeBytes + meta.PieceSizeBytes - 1) / meta.PieceSizeBytes
 	}
 
 	if files, ok := info["files"].([]any); ok {
@@ -97,8 +96,8 @@ func ParseMetainfo(raw io.Reader) (Metainfo, error) {
 			meta.Files = append(meta.Files, parsedFile)
 			meta.TotalSizeBytes += parsedFile.SizeBytes
 		}
-		numPieces = len(meta.Files)
 	}
+	numPieces = (meta.TotalSizeBytes + meta.PieceSizeBytes - 1) / meta.PieceSizeBytes
 
 	if meta.TotalSizeBytes == 0 {
 		return Metainfo{}, errors.New("must specify either file size or include child file metadata")
